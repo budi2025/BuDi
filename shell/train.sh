@@ -1,0 +1,1 @@
+python src/main.py --gpu=0 --dataset=chess --train_dir=train1
