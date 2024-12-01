@@ -6,7 +6,13 @@ This project provides executable source code and preprocessed datasets used in t
 ## Prerequisites
 
 - Python 3.8+
-- [PyTorch](https://pytorch.org/) 1.13.1 
+- [PyTorch](https://pytorch.org/) 1.13.1
+
+## Backbone
+We use SASRec and BSARec as our backbone model.
+1. **SASRec**: The implementation is adapted from the repository [pmixer/SASRec.pytorch](https://github.com/pmixer/SASRec.pytorch). It is defined in `models.py`
+2. **BSARec**: It is available at [yehjin-shin/BSARec](https://github.com/yehjin-shin/BSARec).
+
 
 ## Datasets
 We use 3 datasets in our work: Chess, Crypto, and Physics of StackExchange.
