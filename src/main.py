@@ -9,7 +9,7 @@ For other purposes (e.g., commercial), please contact the authors.
 File: main.py
 - A main class for training and evaluation of BuDi.
 
-Version: 1.0.0
+Version: 1.0
 ***********************************************************************
 '''
 import os
