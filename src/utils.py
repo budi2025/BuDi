@@ -27,10 +27,22 @@ import math
 import pickle
 from sklearn.cluster import KMeans
 
+"""
+Calculate global and local popularity
+
+Input:
+    * user_train: user histories, 
+    * bundle_item_list_dict: bundle-item affiliation dictionary
+    * b_l_bundle_freq: bundle level popularity
+    * u_i_entropy: entropy of user-item interaction
+    * u_b_entropy: entropy of user-bundle interaction
+    * i_l_bundle_freq: item level bundle popularity
+    * args: predefined arguments
+
+Output:
+    * user_sampling_prob: probability of negative sampling for users
+"""
 def global_local_popularity(user_train, bundle_item_list_dict, b_l_bundle_freq, u_i_entropy, u_b_entropy, i_l_bundle_freq, args):
-    """
-    Calculate global and local popularity
-    """
     global_bundle_freq={key: b_l_bundle_freq[key] * (u_i_entropy/u_b_entropy) + i_l_bundle_freq[key] * (u_b_entropy/u_i_entropy) for key in b_l_bundle_freq}
 
     global_bundle_freq=normalize_freq(global_bundle_freq)
@@ -56,25 +68,55 @@ def global_local_popularity(user_train, bundle_item_list_dict, b_l_bundle_freq, 
                 user_sampling_prob[user_key][key] = 1e-10
     return user_sampling_prob
 
+'''
+increase the synthesis proportion gradually (curriculum learning)
+
+input:
+* epoch: epoch
+* max_val: max value of synthesis
+* sharp: control increase rate
+* start_curri: epoch that starts curriculumn learning
+
+returns:
+synthesis propotion 
+'''
 def curriculum_function(epoch, max_val, sharp, start_curri):
     """
     Curriculum learning
     """
     return max_val*(1-np.exp(- (epoch- start_curri)/sharp))
 
+'''
+Popularity-based negative sampling for one user
+
+input:
+* bundle_ids: bundle ids
+* b_i_bundle_freq: popularity of bundles
+* ts: user sequence 
+
+returns:
+* sampled negative items
+'''
 def my_neg_sampling(ts, bundle_ids, b_i_bundle_freq):
-    """
-    Popularity-based negative sampling
-    """
     t = np.random.choice(bundle_ids, p=b_i_bundle_freq/b_i_bundle_freq.sum())
     while t == ts:
         t = np.random.choice(bundle_ids, p=b_i_bundle_freq/b_i_bundle_freq.sum())
     return t
 
+'''
+Sample function of all user sequences
+
+input:
+* user_train: interaction history of each user
+* usernum: number of users
+* itemnum: number of items
+* batch_size: size of batch
+* maxlen: maximum length of user sequence
+* result_queue: queue to save sampling result
+* SEED: random seed
+* user_sampling_prob: probabilties of negative sampling for users
+'''
 def new_sample_function(user_train, usernum, itemnum, batch_size, maxlen, result_queue, SEED, user_sampling_prob):
-    """
-    Sample function for WarpSampler
-    """
     def sample(uid): 
         while len(user_train[uid]) <= 1: 
             uid = np.random.randint(1, usernum + 1)
@@ -111,11 +153,22 @@ def new_sample_function(user_train, usernum, itemnum, batch_size, maxlen, result
             counter += 1
         result_queue.put(zip(*one_batch))
     
+'''
+Wrap Sampler to get all train sequences
 
+input:
+* user_train: interaction history of each user
+* usernum: number of users
+* itemnum: number of items
+* batch_size: size of batch
+* maxlen: maximum length of user sequence
+* n_workers: number of workers to use in sampling
+* alpha: aplha to control I3. Adjusted negative sampling
+
+returns:
+* user train sequences
+'''
 class WarpSampler(object):
-    """
-    mini batch training sampler
-    """
     def __init__(self, User, usernum, itemnum, user_sampling_prob, batch_size=64, maxlen=10, n_workers=1):
         self.result_queue = Queue(maxsize=n_workers * 10)
         self.processors = []
@@ -141,10 +194,16 @@ class WarpSampler(object):
             p.terminate()
             p.join()
 
+'''
+Train and test data partition function
+
+input:
+* fname: file name of dataset
+
+returns:
+* train and test data with information of dataset
+'''
 def data_partition(fname):
-    """
-    Data partitioning
-    """
     usernum = 0
     bundlenum = 0
     User = defaultdict(list)
@@ -178,16 +237,29 @@ def data_partition(fname):
             user_test[user].append(User[user][-1])
     return [user_train, user_valid, user_test, usernum, bundlenum] 
 
+# Evaluate Gini-coefficient
 def evaluate_gini(freq, eps=1e-7):
-    """
-    Evaluate Gini-coefficient
-    """
     freq += eps
     freq = np.sort(freq)
     n = freq.shape[0]
     idx = np.arange(1, n + 1)
     return (np.sum((2 * idx - n - 1) * freq)) / (n * np.sum(freq))
 
+'''
+Evaluation of predicted results(top 10)
+
+input:
+* model: model to evaluate
+* dataset: dataset ot evaluate on
+* args: model details
+* bundle_item_list_dict: bundle-item affiliation dictionary
+* item_num: number of items
+* topklist: lis of top k
+
+Output:
+* results: evaluation score (nDCG, HitRate, Coverage, Entropy, Gini)
+* results tensor: recommendation score for all users and bundles.
+'''
 def evaluate(model, dataset, args, bundle_item_list_dict, item_num, topklist, folder_dir=None, final=False):
     """
     Evaluate the performance of the model
@@ -273,10 +345,19 @@ def evaluate(model, dataset, args, bundle_item_list_dict, item_num, topklist, fo
 
     return results, results_tensor
 
+"""
+Bundle interaction frequency dictionary
+
+Input:
+* datasetname: name of dataset
+
+Output:
+* i_l_bundle_freq_dict: item level bundle frequency
+* b_l_bundle_freq_dict: bundle level bundle frequency
+* u_b_entropy; entropy of user-bundle interaction 
+* u_i_entropy: entropy of user-item interaction
+"""
 def generate_bundle_freq_dict(datasetname):
-    """
-    Bundle interaction frequency dictionary
-    """
     interaction = pd.read_csv("./dataset/"+datasetname+"/user-bundle.txt", sep="\t", header=None)
     interaction=interaction[[0,1]]
     interaction.columns=['user_id', 'bundle_id']
@@ -294,10 +375,23 @@ def generate_bundle_freq_dict(datasetname):
     i_l_bundle_freq_dict = bundle_freq.to_dict()
     return i_l_bundle_freq_dict, b_l_bundle_freq_dict, u_b_entropy, u_i_entropy
 
+"""
+Cluster bundles based on embeddings
+
+Input: 
+* i_l_bundle_freq_dict: item level bundle frequency
+* b_l_bundle_freq_dict: bundle level bundle frequency
+* model: pretrained model
+* bundlenum: number of bundles
+* u_b_entropy; entropy of user-bundle interaction 
+* u_i_entropy: entropy of user-item interaction
+* args: predefined arguments
+
+Output:
+* clusters: cluster dictionary (key: cluster id, value: [bundle_id, bundle's popularity])
+* assignments: assigned cluster ids
+"""
 def cluster_bundle(i_l_bundle_freq, b_l_bundle_freq, model, bundlenum, u_b_entropy, u_i_entropy, args):
-    """
-    Cluster bundles based on embeddings
-    """
     bundle_embeddings = model.bundle_level_bundle_emb.weight + model.bund_emb()
     kmeans = KMeans(n_clusters=args.num_cluster, init='k-means++', n_init='auto').fit(bundle_embeddings[1:].detach().cpu().numpy())
     assignments = kmeans.labels_
@@ -307,10 +401,20 @@ def cluster_bundle(i_l_bundle_freq, b_l_bundle_freq, model, bundlenum, u_b_entro
         clusters[assignments[i-1]][1].append((u_i_entropy/u_b_entropy)*(b_l_bundle_freq[i]) + (u_b_entropy/u_i_entropy)*(i_l_bundle_freq[i]))
     return  clusters, assignments
 
+"""
+Preference-aware replacement
+
+input:
+* pos: original sequence
+* replace_ratio: replacement ratio
+* maxlen: max length of sequence
+* clusters: cluster information dictionary
+* assignments: assigned cluster ids
+
+return: 
+* seq: replaced sequence
+"""
 def pseudo_groundtruth_replace(replace_ratio, pos, maxlen, clusters, assignments):
-    """
-    Preference-aware replacement
-    """
     samplenum = int(maxlen* replace_ratio)
     for i in range(len(pos)):
         for j in random.sample(range(maxlen), samplenum): 
@@ -330,10 +434,16 @@ def pseudo_groundtruth_replace(replace_ratio, pos, maxlen, clusters, assignments
 
     return pos
 
+"""
+min-max scaling
+
+Input: 
+* bundle_freq_dict: bundle frequency dictionary
+
+Output: 
+* normalized_bundle_freq: normalized bundle frequency
+"""
 def normalize_freq(bundle_freq_dict, level=None):
-    """
-    min-max scaling
-    """
     values = list(bundle_freq_dict.values())
     min_value = min(values)
     max_value = max(values)
@@ -354,10 +464,17 @@ def normalize_freq(bundle_freq_dict, level=None):
         }
     return normalized_bundle_freq
 
+"""
+Get top-k items in each user sequence
+
+Input:
+* logs_seqs_items: user history (Bundles decomposed into items)
+* k: top k
+
+Output:
+* top_items: top k popular items in each user sequence
+"""
 def get_top_k_items(logs_seqs_items, k):
-    """
-    Get top-k items in each user sequence
-    """
     top_items = []
 
     for seq in logs_seqs_items:
@@ -375,10 +492,18 @@ def get_top_k_items(logs_seqs_items, k):
     
     return top_items
 
+"""
+Mask top-k items in each user sequence
+
+Input:
+* logs_seqs_items: original user sequences
+* top_items: top k popular items for each user
+* mask_ratio: masking ratio
+
+Output: 
+* masked_logs_seqs: masked user sequences
+"""
 def mask_top_items(logs_seqs_items, top_items, mask_ratio):
-    """
-    Mask top-k items in each user sequence
-    """
     mask_num= int(logs_seqs_items[0].shape[0] * mask_ratio)
     masked_logs_seqs = logs_seqs_items.clone() 
     for i, seq in enumerate(logs_seqs_items):
@@ -393,10 +518,18 @@ def mask_top_items(logs_seqs_items, top_items, mask_ratio):
             
     return masked_logs_seqs
 
+"""
+Item-level masking
+
+Input:
+* seq: user sequences
+* bundle_item_list_dict: bundle-item affiliation dictionary
+* args: predefined arguments
+
+Output: 
+* masked_logs_seqs: masked user sequences
+"""
 def mask_item_level(seq, bundle_item_list_dict, args):
-    """
-    Item-level masking
-    """
     logs_seqs_items= [[bundle_item_list_dict[item] if item in bundle_item_list_dict else [0] for item in s ] for s in seq]
     max_len = max(max(len(inner_list) for inner_list in seq) for seq in logs_seqs_items)
     padded_logs_seqs = [
@@ -407,10 +540,17 @@ def mask_item_level(seq, bundle_item_list_dict, args):
     masked_logs_seqs = mask_top_items(torch.LongTensor(padded_logs_seqs).to(args.device), top_items, args.mask_ratio)
     return masked_logs_seqs
 
+"""
+Calculate global item-level bundle scores
+
+Input:
+* bundle_item_list_dict: bundle-item affiliation dictionary
+* item_counter: item popularity
+
+Output:
+* bundle_scores: global item-level bundle popularity
+"""
 def calculate_bundle_scores(bundle_item_list_dict, item_counter):
-    """
-    Calculate global item-level bundle scores
-    """
     bundle_scores = {}
 
     for bundle_id, item_list in bundle_item_list_dict.items():
