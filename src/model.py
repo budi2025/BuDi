@@ -17,7 +17,7 @@ import random
 import numpy as np
 import torch
 from scipy.sparse import csr_matrix
-# from custom_transformer import MultiheadAttention as MyMultiheadAttention
+from custom_transformer import MultiheadAttention as MyMultiheadAttention
 from torch import nn
 import torch.nn.functional as F
 from utils import *
@@ -30,7 +30,8 @@ input:
     * hidden_units: dimension of hidden vectors
     * dropout_rate: ratio for drop out technique
 
-* outputs: layer output
+output:
+    * outputs: layer output
 '''
 class PointWiseFeedForward(torch.nn.Module):
     def __init__(self, hidden_units, dropout_rate):
@@ -51,10 +52,18 @@ class PointWiseFeedForward(torch.nn.Module):
 
 '''
 Backbone model of BuDi: SASRec with bundle-encoder
+
+input:
+* user_num: number of users
+* bundle_num: number of bundles
+* item_num: number of items
+* bundle_item_list_dict: dictionary of bundle-item affiliation 
+* args: pre-defined arguments using argparse
 '''
-class SASRec(torch.nn.Module):
+class SASRec_2(torch.nn.Module):
+    # initialization of model
     def __init__(self, user_num, bundle_num, item_num, bundle_item_list_dict, args):
-        super(SASRec, self).__init__()
+        super(SASRec_2, self).__init__()
 
         self.user_num = user_num
         self.item_num = item_num
@@ -99,10 +108,9 @@ class SASRec(torch.nn.Module):
             new_attn_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
             self.attention_layernorms.append(new_attn_layernorm)
 
-            new_attn_layer =  torch.nn.MultiheadAttention(args.hidden_units, args.num_heads, args.dropout_rate)
-            """new_attn_layer =  MyMultiheadAttention(args.hidden_units,
+            new_attn_layer =  MyMultiheadAttention(args.hidden_units,
                                                    args.num_heads,
-                                                   args.dropout_rate)"""
+                                                   args.dropout_rate)
             self.attention_layers.append(new_attn_layer)
 
             new_fwd_layernorm = torch.nn.LayerNorm(args.hidden_units, eps=1e-8)
@@ -110,10 +118,8 @@ class SASRec(torch.nn.Module):
 
             new_fwd_layer = PointWiseFeedForward(args.hidden_units, args.dropout_rate)
             self.forward_layers.append(new_fwd_layer)
-
-            # self.pos_sigmoid = torch.nn.Sigmoid()
-            # self.neg_sigmoid = torch.nn.Sigmoid()
-
+    
+    # get bundle embeddings by concatenating bundle-view and item-view embeddings
     def bund_emb(self, ids=None):
         item_embeddings = self.item_emb.weight  # (num_items + 1, embedding_dim)
         bundle_summed_embeddings = torch.sparse.mm(self.affiliation_matrix, item_embeddings)  # shape: (bundlenum+1, embedding_dim)
@@ -129,6 +135,7 @@ class SASRec(torch.nn.Module):
 
         return selected_bundle_embeddings
     
+    # get bundle embeddings for item-level masked sequence
     def masked_bund_emb(self, masked_logs_seqs):
         masked_embs = self.item_emb(masked_logs_seqs)
         sum_embeddings = torch.sum(masked_embs, dim=2)
@@ -136,18 +143,18 @@ class SASRec(torch.nn.Module):
         avg_embeddings = sum_embeddings / count_nonzero.unsqueeze(-1)
         
         return avg_embeddings
-
+    
+    # gets sequence representation using self-attention
     def log2feats(self, log_seqs, seqs):
         seqs *= self.item_emb.embedding_dim ** 0.5
-        # seqs *= seqs.shape[2] ** 0.5
         positions = np.tile(np.array(range(log_seqs.shape[1])), [log_seqs.shape[0], 1])
         seqs += self.pos_emb(torch.LongTensor(positions).to(self.dev))
         seqs = self.emb_dropout(seqs)
 
         timeline_mask = torch.BoolTensor(log_seqs == 0).to(self.dev)
-        seqs *= ~timeline_mask.unsqueeze(-1) # broadcast in last dim
+        seqs *= ~timeline_mask.unsqueeze(-1) 
 
-        tl = seqs.shape[1] # time dim len for enforce causality
+        tl = seqs.shape[1]
         attention_mask = ~torch.tril(torch.ones((tl, tl), dtype=torch.bool, device=self.dev))
 
         for i in range(len(self.attention_layers)):
@@ -156,7 +163,6 @@ class SASRec(torch.nn.Module):
             mha_outputs, _ = self.attention_layers[i](Q, seqs, seqs, 
                                             attn_mask=attention_mask,
                                             key_padding_mask=timeline_mask)
-                                            # need_weights=False) this arg do not work?
             seqs = Q + mha_outputs
             seqs = torch.transpose(seqs, 0, 1)
 
@@ -164,58 +170,28 @@ class SASRec(torch.nn.Module):
             seqs = self.forward_layers[i](seqs)
             seqs *=  ~timeline_mask.unsqueeze(-1)
 
-        log_feats = self.last_layernorm(seqs) # (U, T, C) -> (U, -1, C)
+        log_feats = self.last_layernorm(seqs) 
 
         return log_feats
     
-    def cl_loss(self, masked_twolevel_log_feats, replaced_twolevel_log_feats, args):
-        final_loss=0
-        # for t in range(masked_twolevel_log_feats.shape[1]):
-        for t in range(int(masked_twolevel_log_feats.shape[1]/10), masked_twolevel_log_feats.shape[1], int(masked_twolevel_log_feats.shape[1]/10)):
-            z = torch.cat((masked_twolevel_log_feats[:,t,:], replaced_twolevel_log_feats[:,t,:]), dim=0)
-            normalized_tensor = F.normalize(z, p=2, dim=1)
-            cos_sim_matrix = torch.mm(normalized_tensor, normalized_tensor.t())
-            cos_sim_matrix = cos_sim_matrix / args.temperature
-            # positive score
-            sim_i_j= torch.diag(cos_sim_matrix, args.batch_size) 
-            sim_j_i = torch.diag(cos_sim_matrix, -args.batch_size)
-            positive_samples = torch.cat((sim_i_j, sim_j_i), dim=0)
-            # negative score
-            negative_samples = cos_sim_matrix[self.mask]
-            negative_samples=negative_samples.reshape(self.N,-1)
-            # cross entropy
-            labels = torch.zeros(self.N).to(positive_samples.device).long()
-            logits = torch.cat((positive_samples.reshape(self.N,1), negative_samples), dim=1)
-            loss=self.infonce(logits, labels)
-            loss/=self.N
-        final_loss+=loss
-        return final_loss
-    
-    def cl_loss_all(self, masked_twolevel_log_feats, replaced_twolevel_log_feats, args):
-        final_loss=0
-        for t in range(masked_twolevel_log_feats.shape[1]):
-            z = torch.cat((masked_twolevel_log_feats[:,t,:], replaced_twolevel_log_feats[:,t,:]), dim=0)
-            normalized_tensor = F.normalize(z, p=2, dim=1)
-            cos_sim_matrix = torch.mm(normalized_tensor, normalized_tensor.t())
-            cos_sim_matrix = cos_sim_matrix / args.temperature
-            # positive score
-            sim_i_j= torch.diag(cos_sim_matrix, args.batch_size) 
-            sim_j_i = torch.diag(cos_sim_matrix, -args.batch_size)
-            positive_samples = torch.cat((sim_i_j, sim_j_i), dim=0)
-            # negative score
-            negative_samples = cos_sim_matrix[self.mask]
-            negative_samples=negative_samples.reshape(self.N,-1)
-            # cross entropy
-            labels = torch.zeros(self.N).to(positive_samples.device).long()
-            logits = torch.cat((positive_samples.reshape(self.N,1), negative_samples), dim=1)
-            loss=self.infonce(logits, labels)
-            loss/=self.N
-        final_loss+=loss
-        return final_loss
+    '''
+    forward propagation of the model
 
-    def forward(self, user_ids, log_seqs, pos_seqs, neg_seqs, augment=False, masked_seq=None, replaced_seq=None):        
+    input:
+        * log_seqs: sequence history
+        * pos_seqs: positive bundles
+        * neg_seqs: sampled negative bundles
+        * augment: perform item-level masking or not
+        * masked_seq: masked sequence using item-level masking
+
+    output:
+        * pos_logits: positive logits
+        * neg_logits: negative logits
+    '''  
+    def forward(self, user_ids, log_seqs, pos_seqs, neg_seqs, augment=False, masked_seq=None):        
         bund_embs = self.bund_emb().to(self.dev)
         if augment == True:
+            # item-level masking
             item_level_seqs = self.masked_bund_emb(masked_seq)
         else:
             item_level_seqs = bund_embs[torch.LongTensor(log_seqs).to(self.dev)]
@@ -231,19 +207,18 @@ class SASRec(torch.nn.Module):
         pos_logits = (twolevel_log_feats * pos_embs).sum(dim=-1) 
         neg_logits = (twolevel_log_feats * neg_embs).sum(dim=-1) 
 
-        if replaced_seq is not None:
-            masked_item_level_seqs = self.masked_bund_emb(masked_seq)
-            masked_twolevel_seqs = torch.cat((masked_item_level_seqs, bundle_level_seqs), dim=2)
-            masked_twolevel_log_feats = self.log2feats(log_seqs, masked_twolevel_seqs)
-            replaced_item_level_seqs = bund_embs[torch.LongTensor(replaced_seq).to(self.dev)]
-            replaced_bundle_level_seqs = self.bundle_level_bundle_emb(torch.LongTensor(replaced_seq).to(self.dev)) 
-            replaced_twolevel_seqs = torch.cat((replaced_item_level_seqs, replaced_bundle_level_seqs), dim=2)
-            replaced_twolevel_log_feats = self.log2feats(replaced_seq, replaced_twolevel_seqs)
-            return pos_logits, neg_logits, masked_twolevel_log_feats, replaced_twolevel_log_feats
-        else:
-            return pos_logits, neg_logits
-        
-    def predict(self, user_ids, log_seqs, item_indices): # for inference
+        return pos_logits, neg_logits
+
+    '''
+    predicts the recommendation score between all users and given bundle_indices when sequence history(log_seqs) is provided 
+
+    input:
+        * log_seqs: sequence history
+        * bundle_indices: candidate bundle ids
+
+    * logits: recommendation score
+    '''   
+    def predict(self, user_ids, log_seqs, bundle_indices): # for inference
         bund_embs = self.bund_emb().to(self.dev)
         item_level_seqs = bund_embs[torch.LongTensor(log_seqs).to(self.dev)]
         bundle_level_seqs = self.bundle_level_bundle_emb(torch.LongTensor(log_seqs).to(self.dev)) 
@@ -254,32 +229,30 @@ class SASRec(torch.nn.Module):
 
         twolevel_final_feat = twolevel_log_feats[:, -1, :]
     
-        twolevel_bund_embs = torch.cat((bund_embs[(torch.LongTensor(item_indices).to(self.dev))], self.bundle_level_bundle_emb(torch.LongTensor(item_indices).to(self.dev))),dim=1)
+        twolevel_bund_embs = torch.cat((bund_embs[(torch.LongTensor(bundle_indices).to(self.dev))], self.bundle_level_bundle_emb(torch.LongTensor(bundle_indices).to(self.dev))),dim=1)
 
         logits = twolevel_bund_embs.matmul(twolevel_final_feat.unsqueeze(-1)).squeeze(-1) 
 
-        # preds = self.pos_sigmoid(logits) # rank same item list for different users
-
         return logits # preds # (U, I)
 
+'''
+Reranking model PopCon (https://github.com/snudatalab/PopCon)
+Functions for PopCon are in utils.py.
+Jeon, H., Kim, J., Lee, J., Lee, J., Kang, U.: 
+Aggregately diversified bundle recommendation via popularity debiasing and configuration-aware reranking. 
+In: PAKDD (2023)
+'''
 class PopCon(object):
-    """
-    Class of PopCon reranking
-    """
+    # Initialize the class
     def __init__(self, beta, n):
-        """
-        Initialize the class
-        """
         super(PopCon, self).__init__()
         self.beta = beta
         self.n = n
 
+    # Get dataset
     def get_dataset(self, n_user, n_item, n_bundle, bundle_item, user_item,
                     user_bundle_trn, user_bundle_vld, vld_user_idx, user_bundle_test,
                     user_bundle_test_mask):
-        """
-        Get dataset
-        """
         self.n_user = n_user
         self.n_item = n_item
         self.n_bundle = n_bundle
@@ -294,10 +267,8 @@ class PopCon(object):
         self.bundle_item_dense_tensor = spy_sparse2torch_sparse(self.bundle_item).to_dense()
         self.max_ent = torch.log2(torch.tensor(self.n_item))
 
+    # Get gains of entropy and coverage
     def delta_bundle_batch(self, cur_item_freq, cand_idx_batch):
-        """
-        Get gains of entropy and coverage
-        """
         cur_ent = self.get_entropy(cur_item_freq.unsqueeze(0))
         bi = self.bundle_item_dense_tensor[cand_idx_batch.flatten()]
         nex_item_freq = cur_item_freq.repeat(bi.shape[0], 1) + bi
@@ -312,27 +283,21 @@ class PopCon(object):
             cand_idx_batch.shape), delta_bundle_cov.reshape(
             cand_idx_batch.shape)
 
+    # Compute entropy
     def get_entropy(self, item_freq):
-        """
-        Compute entropy
-        """
         prob = item_freq / item_freq.sum(dim=1).unsqueeze(1)
         ent = -prob * torch.log2(prob)
         ent = torch.sum(ent, dim=1)
         return ent
 
+    # Compute coverage
     def get_coverage(self, item_freq):
-        """
-        Compute coverage
-        """
         num_nz = (item_freq >= 1).sum(dim=1)
         cov = num_nz / item_freq.shape[1]
         return cov
 
+    # Reranking algorithm
     def rerank(self, results, ks):
-        """
-        Reranking algorithm
-        """
         cand_scores, cand_idxs = torch.topk(results, dim=1, k=self.n)
         cand_scores_sigmoid = torch.sigmoid(cand_scores)
         cur_item_freq = torch.zeros(self.n_item) + 1e-9
@@ -354,9 +319,6 @@ class PopCon(object):
                 total_score_batch = cand_score_batch_scaled +\
                                     (1 - cand_score_batch_scaled) * (cand_div_ent_batch + cand_div_cov_batch) +\
                                     adjust_batch
-                """total_score_batch = cand_score_batch_scaled +\
-                                    (1 - cand_score_batch_scaled) * (cand_div_ent_batch) +\
-                                    adjust_batch"""
                 rec_idx_rel = torch.argmax(total_score_batch, axis=1).unsqueeze(1)
                 rec_idx_org = torch.gather(cand_idxs_batch, dim=1, index=rec_idx_rel)
                 freq_gain = self.bundle_item[rec_idx_org.squeeze()].sum(0)
@@ -367,10 +329,8 @@ class PopCon(object):
         rec_list = torch.cat(rec_list, dim=1)
         return rec_list
 
+    # Evaluate the results
     def evaluate_test(self, results, ks, div=True):
-        """
-        Evaluate the results
-        """
         rec_list = self.rerank(results, ks)
         recall_list, map_list, freq_list, ndcg_list = [], [], [], []
         user_idx, _ = np.nonzero(np.sum(self.user_bundle_test, 1))

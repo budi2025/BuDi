@@ -419,10 +419,8 @@ def calculate_bundle_scores(bundle_item_list_dict, item_counter):
 
     return bundle_scores
 
+# format of logs (function for PopCon)
 def form_content(epoch, losses, recalls, maps, covs, ents, ginis, ndcgs, elapses):
-    """
-    Format of logs
-    """
     content = f'{epoch:7d}| {losses[0]:10.4f} {losses[1]:10.4f} |'
     content += f' recall'
     for item in recalls:
@@ -450,17 +448,13 @@ def form_content(epoch, losses, recalls, maps, covs, ents, ginis, ndcgs, elapses
     content += f'| {elapses[0]:7.1f} {elapses[1]:7.1f} {elapses[2]:7.1f} |'
     return content
 
+# Load pickle file (function for PopCon)
 def load_obj(name):
-    """
-    Load pickle file
-    """
     with open(name, 'rb') as f:
         return pickle.load(f)
 
+# Aggregate ground-truth targets and negative targets (function for PopCon)
 def user_filtering(csr, neg):
-    """
-    Aggregate ground-truth targets and negative targets
-    """
     idx, _ = np.nonzero(np.sum(csr, 1))
     pos = np.nonzero(csr[idx].toarray())[1]
     pos = pos[:, np.newaxis]
@@ -468,10 +462,8 @@ def user_filtering(csr, neg):
     arr = np.concatenate((pos, neg), axis=1)
     return arr, idx
 
+# Load dataset (function for PopCon)
 def load_mat_dataset(dataname):
-    """
-    Load dataset
-    """
     path = f'./dataset/{dataname}'
     user_bundle_trn = load_obj(f'{path}/train.pkl')
     user_bundle_vld = load_obj(f'{path}/valid.pkl')
@@ -492,10 +484,8 @@ def load_mat_dataset(dataname):
            user_bundle_trn, user_bundle_vld, vld_user_idx, user_bundle_test,\
            user_bundle_test_mask
 
+# Set random seed (function for PopCon)
 def set_seed(seed):
-    """
-    Set random seed
-    """
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -506,10 +496,8 @@ def set_seed(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+# Get evaluation metrics (function for PopCon)
 def get_metrics(pred_rank, pos_idx, k, bundle_item, div: bool):
-    """
-    Get evaluation metrics
-    """
     pos = torch.eq(pred_rank, pos_idx).float()
     # ndcg
     nonzero_indices = torch.nonzero(pos[:,:k])
@@ -527,10 +515,8 @@ def get_metrics(pred_rank, pos_idx, k, bundle_item, div: bool):
         freq = torch.zeros(bundle_item.shape[1])
     return recall, map, freq, ndcg
 
+# Evaluate diversities (function for PopCon)
 def evaluate_diversities(freqs, div: bool):
-    """
-    Evaluate diversities
-    """
     covs, ents, ginis = [], [], []
     if div:
         for freq in freqs:
@@ -550,10 +536,8 @@ def evaluate_diversities(freqs, div: bool):
         ginis = [0., 0., 0.]
         return covs, ents, ginis
 
+# Evaluate performance in terms of recalls, maps, and frequencies (function for PopCon)
 def evaluate_metrics(pred, pos_idx, bundle_item, ks: list, div: bool, score=True):
-    """
-    Evaluate performance in terms of recalls, maps, and frequencies
-    """
     recalls, maps, freqs, ndcgs = [], [], [], []
     if score:
         pred_rank = torch.topk(pred, max(ks), dim=1, sorted=True)[1]
@@ -567,10 +551,8 @@ def evaluate_metrics(pred, pos_idx, bundle_item, ks: list, div: bool, score=True
         ndcgs.append(ndcg)
     return recalls, maps, torch.stack(freqs), ndcgs
 
+# Transform scipy sparse tensor to torch sparse tensor (function for PopCon)
 def spy_sparse2torch_sparse(data):
-    """
-    Transform scipy sparse tensor to torch sparse tensor
-    """
     samples = data.shape[0]
     features = data.shape[1]
     values = data.data

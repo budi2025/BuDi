@@ -120,7 +120,7 @@ if __name__ == '__main__':
     user_sampling_prob = global_local_popularity(user_train, bundle_item_list_dict, b_l_bundle_freq, u_i_entropy, u_b_entropy, i_l_bundle_freq, args)
 
     sampler = WarpSampler(user_train, usernum, bundlenum, user_sampling_prob, batch_size=args.batch_size, maxlen=args.maxlen, n_workers=3)
-    model = SASRec(usernum, bundlenum, item_num, bundle_item_list_dict, args).to(args.device) 
+    model = SASRec_2(usernum, bundlenum, item_num, bundle_item_list_dict, args).to(args.device) 
     for name, param in model.named_parameters():
         try:
             torch.nn.init.xavier_normal_(param.data)
@@ -223,7 +223,7 @@ if __name__ == '__main__':
 
     model.load_state_dict(torch.load(os.path.join(folder_dir, fname), map_location=torch.device(args.device)))
     clusters, assignments = cluster_bundle(i_l_bundle_freq, b_l_bundle_freq, model, bundlenum, u_b_entropy, u_i_entropy, args)
-    model = SASRec(usernum, bundlenum, item_num, bundle_item_list_dict, args).to(args.device)
+    model = SASRec_2(usernum, bundlenum, item_num, bundle_item_list_dict, args).to(args.device)
     for name, param in model.named_parameters():
         try:
             torch.nn.init.xavier_normal_(param.data)
