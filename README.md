@@ -13,7 +13,6 @@ We use SASRec and BSARec as our backbone model.
 1. **SASRec**: The implementation is adapted from the repository [pmixer/SASRec.pytorch](https://github.com/pmixer/SASRec.pytorch). It is defined in `models.py`. For a transformer layer, we use the implementation of [rodosingh](https://github.com/pytorch/pytorch/issues/41508#issuecomment-1723119580).
 3. **BSARec**: It is available at [yehjin-shin/BSARec](https://github.com/yehjin-shin/BSARec).
 
-
 ## Datasets
 We use 3 datasets in our work: Chess, Crypto, and Physics of StackExchange.
 The preprocessed dataset is included in the repository: `./datset`.
